@@ -1,0 +1,160 @@
+services:
+  # PHP-FPM Service
+  php-fpm:
+    build:
+      context: ./docker/php
+      args:
+        USER_ID: ${WORKSPACE_USER_ID:-1000}
+        GROUP_ID: ${WORKSPACE_GROUP_ID:-1000}
+    volumes:
+      - ./symfony-app:/var/www/symfony-app
+      - ./docker/php/php.ini:/usr/local/etc/php/conf.d/custom.ini:ro
+    environment:
+      - APP_ENV=${APP_ENV:-dev}
+      - APP_DEBUG=${APP_DEBUG:-1}
+      - APP_SECRET=${APP_SECRET}
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_TYPE=${DATABASE_TYPE:-mysql}
+      - XDEBUG_ENABLE=${XDEBUG_ENABLE:-true}
+      - XDEBUG_MODE=${XDEBUG_MODE:-develop,coverage,debug,profile}
+      - XDEBUG_IDE_KEY=${XDEBUG_IDE_KEY:-VSCODE}
+      - XDEBUG_HOST=${XDEBUG_HOST:-host.docker.internal}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    networks:
+      - symfony-network
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm-healthcheck || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Nginx Web Server
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${WEB_SERVER_PORT:-8000}:80"
+    volumes:
+      - ./symfony-app:/var/www/symfony-app
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - php-fpm
+    networks:
+      - symfony-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Development Workspace
+  workspace:
+    build:
+      context: ./docker/workspace
+      args:
+        USER_ID: ${WORKSPACE_USER_ID:-1000}
+        GROUP_ID: ${WORKSPACE_GROUP_ID:-1000}
+    volumes:
+      - ./symfony-app:/var/www/symfony-app
+    environment:
+      - APP_ENV=${APP_ENV:-dev}
+      - APP_DEBUG=${APP_DEBUG:-1}
+      - APP_SECRET=${APP_SECRET}
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_TYPE=${DATABASE_TYPE:-mysql}
+      - XDEBUG_ENABLE=${XDEBUG_ENABLE:-true}
+      - XDEBUG_MODE=${XDEBUG_MODE:-develop,coverage,debug,profile}
+      - XDEBUG_IDE_KEY=${XDEBUG_IDE_KEY:-VSCODE}
+      - XDEBUG_HOST=${XDEBUG_HOST:-host.docker.internal}
+      - TIMEZONE=${TIMEZONE:-UTC}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    networks:
+      - symfony-network
+    tty: true
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:-secret}
+      MYSQL_DATABASE: ${DATABASE_NAME:-symfony_db}
+      MYSQL_USER: ${DATABASE_USER:-symfony}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:-symfony}
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # - ./docker/mysql/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
+    networks:
+      - symfony-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DATABASE_ROOT_PASSWORD:-secret}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # PostgreSQL Database (optional alternative)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-symfony_db}
+      POSTGRES_USER: ${DATABASE_USER:-symfony}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-symfony}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/postgres.conf:/etc/postgresql/conf.d/custom.conf:ro
+    networks:
+      - symfony-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-symfony} -d ${DATABASE_NAME:-symfony_db}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # phpMyAdmin (optional - for MySQL management)
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    environment:
+      - PMA_HOSTS=mysql
+      - PMA_PORT=3306
+      - PMA_DATABASE=${DATABASE_NAME:-symfony_db}
+      - PMA_USER=${DATABASE_USER:-symfony}
+      - PMA_PASSWORD=${DATABASE_PASSWORD:-symfony}
+      - PHP_UPLOAD_MAX_FILESIZE=100M
+      - PHP_MAX_INPUT_VARS=1000
+    ports:
+      - "${PHPMYADMIN_PORT:-8080}:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - symfony-network
+
+  # MailHog (for email testing)
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - "${MAILHOG_PORT:-8025}:8025"
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"
+    networks:
+      - symfony-network
+
+volumes:
+  mysql_data:
+  postgres_data:
+
+networks:
+  symfony-network:
+    driver: bridge
